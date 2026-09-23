@@ -64,3 +64,31 @@ async def summarize_incident(identifier: str) -> Dict[str, Any]:
         "incident": incident,
         "post_mortem": post_mortem
     }
+
+from pydantic import BaseModel
+
+class WorkNoteRequest(BaseModel):
+    work_notes: str
+
+@router.get("/{identifier}/worknotes")
+async def get_incident_work_notes(identifier: str) -> Dict[str, Any]:
+    """Retrieve chronological work notes and journal activity for an incident."""
+    result = await servicenow_mcp_server.execute_tool("get_incident_work_notes", {"identifier": identifier})
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail=f"Incident {identifier} not found")
+    return result
+
+@router.post("/{identifier}/worknotes")
+async def add_incident_work_note(identifier: str, req: WorkNoteRequest) -> Dict[str, Any]:
+    """Appends an internal work note to an open incident."""
+    if not req.work_notes or not req.work_notes.strip():
+        raise HTTPException(status_code=400, detail="work_notes content cannot be empty")
+
+    result = await servicenow_mcp_server.execute_tool("add_work_note", {
+        "identifier": identifier,
+        "work_notes": req.work_notes.strip()
+    })
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to add work note"))
+    return result
+

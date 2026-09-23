@@ -67,7 +67,7 @@ Returns calculated MTTR, MTBF, SLA breach rate, priority and team workload distr
     "sla_compliance_rate": 92.9,
     "mttr_hours": 3.2,
     "mtbf_hours": 24.5,
-    "priority_distribution": { "P1": 5, "P2": 32, "P3": 38, "P4": 10 },
+    "priority_distribution": { "P1": 5, "P2": 32, "P3": 38, "P4": 10, "P5": 4 },
     "assignment_group_distribution": { "Database Administration": 27, "Cloud Operations": 15, "Network Engineering": 12 }
   }
 }

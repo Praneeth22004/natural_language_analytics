@@ -1,9 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, Terminal, ArrowRight, ExternalLink, RefreshCw, Cpu } from 'lucide-react';
-import { sendChatMessage } from '../api';
+import { Send, Sparkles, Terminal, ArrowRight, ExternalLink, RefreshCw, Cpu, RotateCcw, History } from 'lucide-react';
+import { sendChatMessage, resetChatSession } from '../api';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 
+const generateSessionId = () => 'sn_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
+
 export default function ChatAssistantPage({ onInspectQuery, onSelectIncident }) {
+  const [sessionId, setSessionId] = useState(() => {
+    return sessionStorage.getItem('sn_chat_session_id') || generateSessionId();
+  });
   const [messages, setMessages] = useState([
     {
       id: 'welcome',
@@ -25,7 +30,12 @@ export default function ChatAssistantPage({ onInspectQuery, onSelectIncident }) 
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    sessionStorage.setItem('sn_chat_session_id', sessionId);
+  }, [sessionId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -34,6 +44,40 @@ export default function ChatAssistantPage({ onInspectQuery, onSelectIncident }) 
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  const handleRestartChat = async () => {
+    if (resetting || loading) return;
+    setResetting(true);
+    try {
+      await resetChatSession(sessionId);
+    } catch (err) {
+      console.warn("Session reset notice:", err);
+    }
+    const newId = generateSessionId();
+    setSessionId(newId);
+    setMessages([
+      {
+        id: 'welcome_' + Date.now(),
+        role: 'assistant',
+        content: (
+          "🔄 **Chat Ended & Session Restarted**\n\n" +
+          "All conversational context and memory have been cleared, and a fresh session has begun. " +
+          "How can I assist your ServiceNow IT operations today?\n\n" +
+          "Click any prompt below or type your question:"
+        ),
+        suggestions: [
+          "Ticket a ServiceNow incident: Oracle database connection timeout on SAP ORA01 (P1)",
+          "Show all P1 critical incidents",
+          "Summarize INC0000001",
+          "Show open problem tickets",
+          "Show CMDB configuration items",
+          "Identify recurring incidents and root causes"
+        ]
+      }
+    ]);
+    setInput('');
+    setResetting(false);
+  };
 
   const handleSend = async (queryText = null) => {
     const textToSend = queryText || input;
@@ -49,7 +93,14 @@ export default function ChatAssistantPage({ onInspectQuery, onSelectIncident }) 
     setLoading(true);
 
     try {
-      const response = await sendChatMessage(textToSend);
+      const response = await sendChatMessage(textToSend, sessionId);
+      
+      // If user invoked natural-language session reset, synchronize session ID
+      if (response.structured_data?.session_reset) {
+        const newId = generateSessionId();
+        setSessionId(newId);
+      }
+
       setMessages([
         ...newMessages,
         {
@@ -77,19 +128,52 @@ export default function ChatAssistantPage({ onInspectQuery, onSelectIncident }) 
     }
   };
 
-  const samplePrompts = [
-    // "What incidents were reported yesterday?",
-    // "Show all P1 incidents from last week",
-    // "How many incidents are currently open?",
-    // "List all incidents assigned to Network team",
-    // "Show incidents related to AWS",
-    // "Identify recurring incidents and root causes",
-    // "Provide details of the outage reported last month"
-  ];
+  const samplePrompts = [];
+  const turnCount = messages.filter(m => m.role === 'user').length;
 
   return (
     <div className="page-body">
       <div className="chat-window">
+        {/* Chat Control Header */}
+        <div className="chat-header">
+          <div className="chat-header-left">
+            <div className="chat-header-icon-wrap">
+              <Sparkles size={18} />
+            </div>
+            <div className="chat-header-info">
+              <div className="chat-header-title">
+                <span>ServiceNow Incident AI Copilot</span>
+                <span className="chat-session-badge">
+                  <span className="chat-session-pulse" />
+                  Active Session
+                </span>
+              </div>
+              <div className="chat-memory-badge">
+                <History size={12} />
+                <span>
+                  {turnCount === 0 ? "Memory fresh" : `${turnCount} exchange${turnCount === 1 ? '' : 's'} memorized`}
+                </span>
+                <span style={{ opacity: 0.35 }}>•</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10.5px', opacity: 0.65 }}>
+                  {sessionId.slice(0, 16)}...
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="chat-header-right">
+            <button
+              className="btn-restart-chat"
+              onClick={handleRestartChat}
+              disabled={loading || resetting}
+              title="End current chat, clear conversational memory, and restart fresh"
+            >
+              <RotateCcw size={13} style={resetting ? { animation: 'spin 1s linear infinite' } : {}} />
+              <span>{resetting ? 'Restarting...' : 'End Chat & Restart'}</span>
+            </button>
+          </div>
+        </div>
+
         {/* Chat Messages */}
         <div className="chat-messages">
           {messages.map((msg) => (
@@ -161,6 +245,12 @@ export default function ChatAssistantPage({ onInspectQuery, onSelectIncident }) 
                       <span className="count" style={{ color: '#60a5fa' }}>{msg.structured_data.breakdown.Low}</span>
                       <span className="label">Low (P4)</span>
                     </div>
+                    {msg.structured_data.breakdown.Planning !== undefined && (
+                      <div className="breakdown-pill" style={{ borderColor: 'rgba(139, 92, 246, 0.3)' }}>
+                        <span className="count" style={{ color: '#a78bfa' }}>{msg.structured_data.breakdown.Planning}</span>
+                        <span className="label">Planning (P5)</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Sample Incidents click to inspect */}

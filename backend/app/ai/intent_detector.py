@@ -13,17 +13,36 @@ class IntentDetector:
     INTENT_REPORT_GENERATION = "REPORT_GENERATION"
     INTENT_APPLICATION_ANALYTICS = "APPLICATION_ANALYTICS"
     INTENT_INCIDENT_SUMMARIZATION = "INCIDENT_SUMMARIZATION"
+    INTENT_WORKNOTES = "WORKNOTES_MANAGEMENT"
     INTENT_CREATE_INCIDENT = "CREATE_INCIDENT"
     INTENT_PROBLEM_LOOKUP = "PROBLEM_LOOKUP"
     INTENT_CMDB_LOOKUP = "CMDB_LOOKUP"
     INTENT_SRE_ADVISORY = "SRE_ADVISORY"
     INTENT_GENERAL = "GENERAL_HELP"
     INTENT_DIRECT_LLM = "DIRECT_LLM"
+    INTENT_RESET_SESSION = "RESET_SESSION"
 
     @classmethod
     def detect_intent(cls, user_text: str, context: Dict[str, Any] = None) -> str:
         text = user_text.lower().strip()
         context = context or {}
+
+        # 0. Session Control (End Chat, Restart Conversation, Reset Context)
+        if text in [
+            "end chat", "end conversation", "end session",
+            "restart chat", "restart conversation", "restart session",
+            "restart", "reset", "start over",
+            "reset chat", "reset session", "reset context", "reset conversation",
+            "clear chat", "clear session", "clear conversation", "clear history",
+            "new chat", "new session", "new conversation"
+        ] or any(phrase in text for phrase in [
+            "end the chat", "end this chat", "end the conversation",
+            "restart the chat", "restart the conversation",
+            "reset the chat", "reset the conversation", "reset the session",
+            "clear the chat", "clear the session", "clear chat history",
+            "start a new chat", "start a new session", "start a fresh conversation"
+        ]):
+            return cls.INTENT_RESET_SESSION
 
         # 1. Greetings & System Capabilities
         if text in ["hi", "hello", "hey", "help", "help me", "who are you", "what can you do", "commands"]:
@@ -49,6 +68,10 @@ class IntentDetector:
             )
         ):
             return cls.INTENT_CREATE_INCIDENT
+
+        # 1.8 Incident Work Notes Management (View or Add work notes)
+        if any(w in text for w in ["work note", "work notes", "worknote", "worknotes", "journal notes", "journal entry"]):
+            return cls.INTENT_WORKNOTES
 
         # 2. Single Incident Summarization (e.g. INC0010101, "summarize INC...", "post-mortem for INC...")
         if re.search(r"inc\d{5,8}", text, re.IGNORECASE) or ("summarize" in text and ("incident" in text or "ticket" in text)):

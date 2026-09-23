@@ -74,7 +74,7 @@ class AnalyticsMCPServer:
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         if tool_name == "calculate_kpis":
             query = arguments.get("filter_query", "")
-            incidents = await self.client.query_table("incident", sysparm_query=query, limit=200)
+            incidents = await self.client.query_table("incident", sysparm_query=query, limit=1000)
             return self._compute_kpis(incidents)
 
         elif tool_name == "cluster_recurring_incidents":

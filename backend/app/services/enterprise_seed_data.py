@@ -134,6 +134,9 @@ def generate_enterprise_incidents():
         # Low (2)
         {"p": 4, "state": "Resolved", "ci": "Employee Hub", "grp": "Service Desk", "desc": "Intranet footer link typography alignment issue", "sla": False},
         {"p": 4, "state": "Closed", "ci": "General IT", "grp": "Service Desk", "desc": "Floor 4 printer spooler queue cleared", "sla": False},
+        # Planning (2)
+        {"p": 5, "state": "New", "ci": "Cloud Operations", "grp": "Cloud Operations", "desc": "Planning capacity upgrade for Kubernetes cluster nodes", "sla": False},
+        {"p": 5, "state": "In Progress", "ci": "Oracle Exadata DB", "grp": "Database Administration", "desc": "Quarterly index optimization maintenance planning", "sla": False},
     ]
 
     for idx, conf in enumerate(yesterday_configs, start=1):

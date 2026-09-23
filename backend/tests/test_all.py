@@ -44,6 +44,11 @@ def test_query_translation_network_team():
     assert "assignment_groupLIKENetwork" in res["sysparm_query"]
     assert "Network" in res["applied_filters"]["assignment_group"]
 
+def test_query_translation_p5_planning():
+    res = QueryTranslator.translate("Show all P5 planning tickets")
+    assert "priority=5" in res["sysparm_query"]
+    assert res["applied_filters"]["priority"] == 5
+
 @pytest.mark.asyncio
 async def test_servicenow_mcp_query():
     result = await servicenow_mcp_server.execute_tool("query_incidents", {"sysparm_query": "priority=1", "limit": 10})

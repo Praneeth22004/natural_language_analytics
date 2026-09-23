@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional
 from app.services.servicenow import default_sn_client, ServiceNowClient
+from app.ai.category_classifier import CategoryClassifier
 
 class ServiceNowMCPServer:
     """MCP Server exposing ServiceNow data retrieval tools."""
@@ -78,6 +79,38 @@ class ServiceNowMCPServer:
                 }
             },
             {
+                "name": "get_incident_work_notes",
+                "description": "Fetch chronological work notes and journal activity for an incident.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "identifier": {
+                            "type": "string",
+                            "description": "Incident number (e.g. INC0000060) or sys_id"
+                        }
+                    },
+                    "required": ["identifier"]
+                }
+            },
+            {
+                "name": "add_work_note",
+                "description": "Add an internal work note to an existing incident in ServiceNow.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "identifier": {
+                            "type": "string",
+                            "description": "Incident number (e.g. INC0000060) or sys_id"
+                        },
+                        "work_notes": {
+                            "type": "string",
+                            "description": "The work note text describing triage findings, investigation notes, or progress"
+                        }
+                    },
+                    "required": ["identifier", "work_notes"]
+                }
+            },
+            {
                 "name": "create_incident",
                 "description": "Create / ticket a new incident in ServiceNow with short description, description, priority, category, and affected CI.",
                 "parameters": {
@@ -109,7 +142,7 @@ class ServiceNowMCPServer:
                         },
                         "category": {
                             "type": "string",
-                            "description": "Incident category (software, hardware, network, database, inquiry)"
+                            "description": "Incident category (database, hardware, network, software, inquiry). If omitted, automatically analyzed and mapped from short_description and description."
                         },
                         "assignment_group": {
                             "type": "string",
@@ -128,6 +161,19 @@ class ServiceNowMCPServer:
             if not short_desc:
                 raise ValueError("short_description is required to create an incident")
 
+            desc = arguments.get("description", short_desc)
+
+            # Analyze and map the right category based on short_description and description
+            raw_cat = arguments.get("category")
+            normalized_cat = CategoryClassifier.normalize(raw_cat) if raw_cat else None
+
+            # If no category provided, or if raw_cat was generic inquiry or empty,
+            # analyze short_description and description across Database, Hardware, Network, Software, Inquiry
+            if not normalized_cat or str(raw_cat).strip().lower() in ["inquiry", "inquiry / help", ""]:
+                category = CategoryClassifier.classify(short_desc, desc)
+            else:
+                category = normalized_cat
+
             prio = arguments.get("priority", 3)
             urgency = arguments.get("urgency", 2)
             impact = arguments.get("impact", 2)
@@ -140,20 +186,23 @@ class ServiceNowMCPServer:
 
             payload = {
                 "short_description": short_desc,
-                "description": arguments.get("description", short_desc),
+                "description": desc,
                 "priority": str(prio),
                 "urgency": str(urgency),
                 "impact": str(impact),
-                "category": arguments.get("category", "inquiry"),
+                "category": category,
                 "cmdb_ci": arguments.get("cmdb_ci", "Service Desk / End-User Devices"),
                 "assignment_group": arguments.get("assignment_group", "Service Desk"),
                 "comments": "Created via AI Incident Assistant"
             }
             record = await self.client.create_record("incident", payload)
+            cat_label = CategoryClassifier.get_display_label(category)
             return {
                 "success": True,
                 "incident": record,
-                "message": f"Successfully created incident {record.get('number')} in ServiceNow."
+                "category": category,
+                "category_label": cat_label,
+                "message": f"Successfully created incident {record.get('number')} in ServiceNow under category '{cat_label}'."
             }
 
         elif tool_name == "query_incidents":
@@ -184,6 +233,60 @@ class ServiceNowMCPServer:
             query = arguments.get("sysparm_query", "")
             records = await self.client.query_table("cmdb_ci", sysparm_query=query)
             return {"count": len(records), "configuration_items": records}
+
+        elif tool_name == "get_incident_work_notes":
+            identifier = arguments.get("identifier", "").strip()
+            if not identifier:
+                raise ValueError("identifier is required to fetch work notes")
+
+            detail = await self.execute_tool("get_incident_detail", {"identifier": identifier})
+            if not detail.get("found"):
+                return {"found": False, "work_notes": [], "message": f"Incident '{identifier}' not found."}
+
+            inc = detail["incident"]
+            sys_id = inc.get("sys_id", identifier)
+            inc_num = inc.get("number", identifier)
+            notes = await self.client.get_incident_work_notes(sys_id, inc_num)
+            return {
+                "found": True,
+                "incident_number": inc_num,
+                "sys_id": sys_id,
+                "count": len(notes),
+                "work_notes": notes
+            }
+
+        elif tool_name == "add_work_note":
+            identifier = arguments.get("identifier", "").strip()
+            note_text = arguments.get("work_notes", "").strip()
+            if not identifier:
+                raise ValueError("identifier is required to add work notes")
+            if not note_text:
+                raise ValueError("work_notes text cannot be empty")
+
+            detail = await self.execute_tool("get_incident_detail", {"identifier": identifier})
+            if not detail.get("found"):
+                return {"success": False, "message": f"Incident '{identifier}' not found."}
+
+            inc = detail["incident"]
+            sys_id = inc.get("sys_id", identifier)
+            inc_num = inc.get("number", identifier)
+            inc_state = inc.get("state", "New")
+
+            is_closed = str(inc_state).lower() in ["closed", "7", "canceled", "8"]
+
+            update_res = await self.client.update_record("incident", sys_id, {"work_notes": note_text})
+            updated_notes = await self.client.get_incident_work_notes(sys_id, inc_num)
+
+            return {
+                "success": True,
+                "incident_number": inc_num,
+                "sys_id": sys_id,
+                "state": inc_state,
+                "is_closed": is_closed,
+                "note_added": note_text,
+                "updated_notes": updated_notes,
+                "message": f"Work note successfully added to incident {inc_num}."
+            }
 
         else:
             raise ValueError(f"Unknown tool: '{tool_name}' on {self.name}")

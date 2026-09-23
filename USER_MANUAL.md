@@ -193,7 +193,7 @@ Provides bird's-eye visibility into enterprise operational stability, service de
 - **MTBF (Mean Time Between Failures)**: Average operating hours elapsed between consecutive system failures (24.5 hours).
 
 #### Visual Analytics Charts:
-- **Severity & Priority Distribution (Donut Chart)**: Visual breakdown of P1 Critical (Red), P2 High (Orange), P3 Medium (Yellow), and P4 Low (Blue).
+- **Severity & Priority Distribution (Donut Chart)**: Visual breakdown across all 5 ITIL priority tiers: P1 Critical (Red), P2 High (Orange), P3 Medium (Yellow), P4 Low (Blue), and P5 Planning (Purple).
 - **Incident Volume Trend (Area Chart)**: Smooth gradient curves illustrating daily and monthly volume trajectories.
 - **Assignment Group Workload (Horizontal Bar Chart)**: Ranks teams (e.g. Service Desk, Hardware, Software, Network, Database) by active ticket count.
 - **Top Affected Configuration Items (Horizontal Bar Chart)**: Highlights which business applications are causing the highest operational friction (Service Desk, MailServerUS, Sales Force Automation, Storage Area Network 001).

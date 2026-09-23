@@ -59,7 +59,8 @@ export default function IncidentAnalyticsDashboardPage({ onSelectIncident }) {
     { label: 'P1 Critical', value: kpis.priority_distribution?.P1 || 0, color: '#ef4444' },
     { label: 'P2 High', value: kpis.priority_distribution?.P2 || 0, color: '#f97316' },
     { label: 'P3 Medium', value: kpis.priority_distribution?.P3 || 0, color: '#eab308' },
-    { label: 'P4 Low', value: kpis.priority_distribution?.P4 || 0, color: '#3b82f6' }
+    { label: 'P4 Low', value: kpis.priority_distribution?.P4 || 0, color: '#3b82f6' },
+    { label: 'P5 Planning', value: kpis.priority_distribution?.P5 || 0, color: '#8b5cf6' }
   ];
 
   // Formatter for Assignment Groups

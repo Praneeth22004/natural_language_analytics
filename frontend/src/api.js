@@ -10,6 +10,16 @@ export async function sendChatMessage(message, sessionId = "default_session") {
   return res.json();
 }
 
+export async function resetChatSession(sessionId = "default_session") {
+  const res = await fetch(`${API_BASE}/chat/session/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId })
+  });
+  if (!res.ok) throw new Error(`Reset session error: ${res.statusText}`);
+  return res.json();
+}
+
 export async function fetchDashboardMetrics(timeframe = null) {
   const url = timeframe ? `${API_BASE}/dashboard/metrics?timeframe=${timeframe}` : `${API_BASE}/dashboard/metrics`;
   const res = await fetch(url);
@@ -37,6 +47,26 @@ export async function summarizeIncident(identifier) {
   if (!res.ok) throw new Error(`Summarize API error: ${res.statusText}`);
   return res.json();
 }
+
+export async function fetchIncidentWorkNotes(identifier) {
+  const res = await fetch(`${API_BASE}/incidents/${identifier}/worknotes`);
+  if (!res.ok) throw new Error(`Fetch work notes error: ${res.statusText}`);
+  return res.json();
+}
+
+export async function addIncidentWorkNote(identifier, workNotes) {
+  const res = await fetch(`${API_BASE}/incidents/${identifier}/worknotes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ work_notes: workNotes })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || `Add work note error: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 
 export async function fetchRecurringClusters() {
   const res = await fetch(`${API_BASE}/analytics/recurring`);

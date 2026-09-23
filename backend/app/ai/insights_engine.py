@@ -16,7 +16,7 @@ class InsightsEngine:
         total = len(incidents)
 
         # Priority breakdown
-        breakdown = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+        breakdown = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Planning": 0}
         app_counter = Counter()
 
         for inc in incidents:
@@ -30,6 +30,8 @@ class InsightsEngine:
                 breakdown["Medium"] += 1
             elif p == "4":
                 breakdown["Low"] += 1
+            elif p == "5":
+                breakdown["Planning"] += 1
 
             ci = inc.get("cmdb_ci", "General IT")
             app_counter[ci] += 1
@@ -87,7 +89,7 @@ class InsightsEngine:
                 "content": (
                     f"User Query: {user_query}\n"
                     f"Timeframe: {timeframe}\n"
-                    f"Priority Breakdown: P1={breakdown['Critical']}, P2={breakdown['High']}, P3={breakdown['Medium']}, P4={breakdown['Low']}\n"
+                    f"Priority Breakdown: P1={breakdown['Critical']}, P2={breakdown['High']}, P3={breakdown['Medium']}, P4={breakdown['Low']}, P5={breakdown['Planning']}\n"
                     f"Top Impacted CIs: {', '.join(top_apps)}\n"
                     f"Sample ServiceNow Tickets:\n" + "\n".join(sample_lines)
                 )
@@ -128,7 +130,7 @@ class InsightsEngine:
         text_presentation = (
             f"**Summary:** {summary_text}\n\n"
             f"**Key Insights (AI SRE Analysis):**\n{key_insights}\n\n"
-            f"**Breakdown:** Critical: {breakdown['Critical']} | High: {breakdown['High']} | Medium: {breakdown['Medium']} | Low: {breakdown['Low']}\n"
+            f"**Breakdown:** Critical: {breakdown['Critical']} | High: {breakdown['High']} | Medium: {breakdown['Medium']} | Low: {breakdown['Low']} | Planning: {breakdown['Planning']}\n"
             f"**Top Applications:** " + ", ".join(top_apps)
         )
 

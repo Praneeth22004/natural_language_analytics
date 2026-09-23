@@ -301,6 +301,111 @@ class ServiceNowClient:
             ENTERPRISE_INCIDENTS.insert(0, created_item)
         return created_item
 
+    async def update_record(self, table_name: str, sys_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Updates an existing record in a ServiceNow table via live REST API (PATCH) or mock dataset."""
+        if self.instance_url and "dev00000" not in self.instance_url:
+            endpoint = f"{self.instance_url}/api/now/table/{table_name}/{sys_id}"
+            headers = {
+                "Authorization": self._get_basic_auth_header(),
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
+                    resp = await client.patch(endpoint, json=payload, headers=headers)
+
+                    if resp.status_code == 401:
+                        if not self._user_token:
+                            await self._authenticate_session_fallback()
+                        if self._user_token:
+                            headers_session = {
+                                "Content-Type": "application/json",
+                                "Accept": "application/json",
+                                "X-UserToken": self._user_token
+                            }
+                            resp = await client.patch(endpoint, json=payload, headers=headers_session, cookies=self._session_cookies)
+
+                    if resp.status_code in [200, 201]:
+                        data = resp.json()
+                        raw_result = data.get("result", {})
+                        item = {}
+                        for k, v in raw_result.items():
+                            if isinstance(v, dict) and "display_value" in v:
+                                item[k] = v.get("display_value")
+                            else:
+                                item[k] = v
+                        return item
+                    else:
+                        print(f"[ServiceNow Update Record Error]: HTTP {resp.status_code} - {resp.text}")
+            except Exception as e:
+                print(f"[ServiceNow Update Record Exception]: {e}")
+
+        # Fallback simulation if mock enabled or connection fails
+        now_str = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        for inc in ENTERPRISE_INCIDENTS:
+            if inc.get("sys_id") == sys_id or inc.get("number") == sys_id:
+                for k, v in payload.items():
+                    if k == "work_notes":
+                        existing_notes = inc.get("work_notes", "")
+                        new_note_entry = f"{now_str} - System Administrator (Work notes)\n{v}"
+                        inc["work_notes"] = f"{new_note_entry}\n\n{existing_notes}".strip() if existing_notes else new_note_entry
+                    else:
+                        inc[k] = v
+                return inc
+        return {"sys_id": sys_id, **payload}
+
+    async def get_incident_work_notes(self, sys_id: str, incident_num: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieves chronological journal entries (work_notes, comments) for an incident."""
+        notes: List[Dict[str, Any]] = []
+        if self.instance_url and "dev00000" not in self.instance_url:
+            try:
+                # Query sys_journal_field for entries linked to this sys_id
+                journals = await self.query_table(
+                    "sys_journal_field",
+                    sysparm_query=f"element_id={sys_id}^ORDERBYDESCsys_created_on",
+                    limit=50
+                )
+                if journals:
+                    for j in journals:
+                        notes.append({
+                            "type": j.get("element", "work_notes"),
+                            "value": j.get("value", ""),
+                            "created_at": j.get("sys_created_on", ""),
+                            "created_by": j.get("sys_created_by", "System User"),
+                            "sys_id": j.get("sys_id", "")
+                        })
+                    return notes
+            except Exception as e:
+                print(f"[ServiceNow Get Work Notes Exception]: {e}")
+
+        # Fallback: check incident detail or mock dataset
+        target_inc = None
+        for inc in ENTERPRISE_INCIDENTS:
+            if inc.get("sys_id") == sys_id or inc.get("number") == (incident_num or sys_id):
+                target_inc = inc
+                break
+
+        if target_inc:
+            wn_raw = target_inc.get("work_notes", "")
+            if wn_raw:
+                blocks = wn_raw.split("\n\n")
+                for b in blocks:
+                    lines = b.strip().split("\n", 1)
+                    header = lines[0] if lines else ""
+                    body = lines[1] if len(lines) > 1 else header
+                    created_at = header.split(" - ")[0] if " - " in header else ""
+                    created_by = header.split(" - ")[1].split(" (")[0] if " - " in header and " (" in header else "Administrator"
+                    notes.append({
+                        "type": "work_notes",
+                        "value": body,
+                        "created_at": created_at,
+                        "created_by": created_by,
+                        "sys_id": ""
+                    })
+        return notes
+
+
     def _query_mock_table(self, table_name: str, query: str, limit: int, offset: int) -> List[Dict[str, Any]]:
         """Applies query filters against mock data mirroring ServiceNow sysparm_query semantics."""
         dataset = []
@@ -344,6 +449,8 @@ class ServiceNowClient:
         if "PRIORITY=3" in query_upper and not str(item.get("priority")).startswith("3"):
             return False
         if "PRIORITY=4" in query_upper and not str(item.get("priority")).startswith("4"):
+            return False
+        if "PRIORITY=5" in query_upper and not str(item.get("priority")).startswith("5"):
             return False
 
         # State check (Open vs Closed)
@@ -407,6 +514,34 @@ class ServiceNowClient:
                     m_end = TODAY
                     if not (m_start <= opened_dt <= m_end):
                         return False
+
+                # Check for BETWEEN filter (e.g. opened_atBETWEEN2026-08-01 00:00:00@2026-08-31 23:59:59)
+                between_match = re.search(r"OPENED_ATBETWEEN([^@]+)@([^^\^]+)", query_upper)
+                if between_match:
+                    dt_start = datetime.datetime.fromisoformat(between_match.group(1).strip())
+                    dt_end = datetime.datetime.fromisoformat(between_match.group(2).strip())
+                    if not (dt_start <= opened_dt <= dt_end):
+                        return False
+
+                # Check for >= date filter
+                gte_match = re.search(r"OPENED_AT>=([^^\^]+)", query_upper)
+                if gte_match and "DAYSAGO" not in gte_match.group(1) and "JAVASCRIPT" not in gte_match.group(1):
+                    try:
+                        dt_gte = datetime.datetime.fromisoformat(gte_match.group(1).strip())
+                        if opened_dt < dt_gte:
+                            return False
+                    except Exception:
+                        pass
+
+                # Check for <= date filter
+                lte_match = re.search(r"OPENED_AT<=([^^\^]+)", query_upper)
+                if lte_match and "DAYSAGO" not in lte_match.group(1) and "JAVASCRIPT" not in lte_match.group(1):
+                    try:
+                        dt_lte = datetime.datetime.fromisoformat(lte_match.group(1).strip())
+                        if opened_dt > dt_lte:
+                            return False
+                    except Exception:
+                        pass
             except Exception:
                 pass
 

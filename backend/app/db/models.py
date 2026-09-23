@@ -31,7 +31,7 @@ class IncidentCache(Base):
     number = Column(String(32), index=True, nullable=False)
     short_description = Column(String(512), nullable=False)
     description = Column(Text, nullable=True)
-    priority = Column(Integer, index=True, default=3)  # 1=Critical, 2=High, 3=Moderate, 4=Low
+    priority = Column(Integer, index=True, default=3)  # 1=Critical, 2=High, 3=Moderate, 4=Low, 5=Planning
     state = Column(String(32), index=True, default="New")  # New, In Progress, On Hold, Resolved, Closed
     category = Column(String(64), default="Software")
     assignment_group = Column(String(128), index=True, default="Service Desk")

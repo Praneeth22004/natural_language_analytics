@@ -13,6 +13,7 @@ from app.ai.query_translator import QueryTranslator
 from app.ai.insights_engine import InsightsEngine
 from app.ai.memory_manager import memory_manager
 from app.ai.llm_client import llm_client
+from app.ai.category_classifier import CategoryClassifier
 from app.mcp.servicenow_mcp import servicenow_mcp_server
 from app.mcp.analytics_mcp import analytics_mcp_server
 from app.mcp.reporting_mcp import reporting_mcp_server
@@ -31,6 +32,24 @@ class ChatResponse(BaseModel):
     structured_data: Optional[Dict[str, Any]] = None
     execution_time_ms: int
     suggestions: List[str] = []
+
+class ResetSessionRequest(BaseModel):
+    session_id: str
+
+class ResetSessionResponse(BaseModel):
+    status: str
+    session_id: str
+    message: str
+
+@router.post("/session/reset", response_model=ResetSessionResponse)
+async def reset_chat_session(req: ResetSessionRequest):
+    """Explicitly resets and clears conversational memory for the given session ID."""
+    memory_manager.reset_session(req.session_id)
+    return ResetSessionResponse(
+        status="success",
+        session_id=req.session_id,
+        message="Chat session memory has been cleared and reset successfully."
+    )
 
 @router.post("", response_model=ChatResponse)
 async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
@@ -61,23 +80,42 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     structured_data = None
     records_count = 0
     suggestions = []
+    applied_filters = {}
+    retrieved_incidents = None
+
+    # -1. RESET / END CHAT SESSION INTENT
+    if intent == IntentDetector.INTENT_RESET_SESSION:
+        memory_manager.reset_session(session_id)
+        response_text = (
+            "🔄 **Chat Context Cleared & Session Restarted**\n\n"
+            "All prior conversational memory, cached query filters, and tracked incident references have been reset.\n\n"
+            "I am ready for a fresh inquiry! How can I assist you with ServiceNow IT operations, outages, or incident diagnostics today?"
+        )
+        structured_data = {
+            "session_reset": True,
+            "session_id": session_id
+        }
+        suggestions = [
+            "Show all P1 critical incidents",
+            "Ticket a ServiceNow incident: Oracle database connection timeout",
+            "Show open problem tickets",
+            "What are our operational KPIs?"
+        ]
 
     # 0. DIRECT LLM ASSISTANCE (General Knowledge, Conversational, Technical, or Analytical Questions)
-    if intent == IntentDetector.INTENT_DIRECT_LLM:
-        prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful, highly knowledgeable AI assistant with deep expertise in technology, "
-                    "systems engineering, and general knowledge. "
-                    "Answer the user's question accurately, directly, and concisely (under 90 words)."
-                )
-            },
-            {
-                "role": "user",
-                "content": raw_query
-            }
-        ]
+    elif intent == IntentDetector.INTENT_DIRECT_LLM:
+        history = session.get_chat_history(max_turns=6)
+        system_instruction = (
+            "You are a helpful, highly knowledgeable AI assistant with deep expertise in technology, "
+            "systems engineering, ITIL operations, and ServiceNow. "
+            "Answer the user's question accurately, directly, and concisely (under 90 words). "
+            "Maintain continuity with previous turns in this conversation if the user refers to past context."
+        )
+        prompt = [{"role": "system", "content": system_instruction}]
+        if history:
+            prompt.extend(history)
+        prompt.append({"role": "user", "content": raw_query})
+
         llm_reply = None
         try:
             llm_reply = await llm_client.generate_chat_completion(prompt, temperature=0.3, max_tokens=220)
@@ -154,10 +192,18 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
                 "short_description": clean_title[:100],
                 "description": raw_query,
                 "priority": prio,
-                "category": "database" if any(w in raw_query.lower() for w in ["data", "sql", "oracle"]) else ("network" if any(w in raw_query.lower() for w in ["net", "vpn", "switch"]) else "inquiry"),
+                "category": CategoryClassifier.classify(clean_title, raw_query),
                 "cmdb_ci": "Oracle Database (SAP ORA01)" if "oracle" in raw_query.lower() else ("MailServerUS" if any(w in raw_query.lower() for w in ["mail", "email"]) else "Service Desk / End-User Devices"),
                 "assignment_group": "Database" if any(w in raw_query.lower() for w in ["oracle", "sql"]) else ("Network" if any(w in raw_query.lower() for w in ["vpn", "switch"]) else "Service Desk")
             }
+        else:
+            # If LLM didn't produce a valid category or used default inquiry, analyze text
+            curr_cat = extracted_data.get("category")
+            if not curr_cat or CategoryClassifier.normalize(curr_cat) in [None, "inquiry"]:
+                extracted_data["category"] = CategoryClassifier.classify(
+                    extracted_data.get("short_description", ""),
+                    extracted_data.get("description", raw_query)
+                )
 
         # Step 2: Create ticket in ServiceNow via MCP tool
         create_result = await servicenow_mcp_server.execute_tool("create_incident", extracted_data)
@@ -215,12 +261,16 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
             f"3. Check for recent infrastructure changes or deployments."
         )
 
+        raw_cat_val = created_inc.get("category") or extracted_data.get("category", "inquiry")
+        cat_display = CategoryClassifier.get_display_label(str(raw_cat_val))
+
         response_text = (
             f"### 🎫 Incident Created in ServiceNow: **{inc_num}**\n\n"
             f"Your incident has been submitted to **ServiceNow (dev204434)**.\n\n"
             f"| Attribute | Value |\n"
             f"| :--- | :--- |\n"
             f"| **Ticket Number** | `{inc_num}` |\n"
+            f"| **Category** | **{cat_display}** |\n"
             f"| **Priority** | **{prio_label}** |\n"
             f"| **State** | **New / Unassigned** |\n"
             f"| **Short Description** | {inc_title} |\n"
@@ -240,10 +290,98 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
 
         suggestions = [
             f"Summarize {inc_num}",
+            f"Show work notes for {inc_num}",
             "Show all P1 critical incidents",
-            "What are our operational KPIs?",
-            "Identify recurring incidents and root causes"
+            "What are our operational KPIs?"
         ]
+
+    # 1.1 WORK NOTES MANAGEMENT (View & Add Work Notes)
+    elif intent == IntentDetector.INTENT_WORKNOTES:
+        inc_match = re.search(r"\b(inc\d{5,8})\b", raw_query, re.IGNORECASE)
+        target_num = inc_match.group(1).upper() if inc_match else context.get("last_incident_number")
+
+        if not target_num:
+            response_text = (
+                "### 📝 ServiceNow Incident Work Notes\n\n"
+                "Please specify an incident number to view or add work notes.\n\n"
+                "**Examples:**\n"
+                "- `Show work notes for INC0000060`\n"
+                "- `Add work note to INC0000060: Primary database failover verified and operational.`"
+            )
+            suggestions = ["Show work notes for INC0000060", "Show all P1 critical incidents"]
+        else:
+            context["last_incident_number"] = target_num
+            # Detect if user wants to ADD a work note
+            is_adding = any(w in raw_query.lower() for w in ["add", "append", "log", "update", "write", "record"]) or ":" in raw_query
+            
+            note_content = ""
+            if ":" in raw_query:
+                note_content = raw_query.split(":", 1)[1].strip()
+            elif is_adding:
+                # Try to extract after target_num
+                parts = re.split(re.escape(target_num), raw_query, flags=re.IGNORECASE)
+                if len(parts) > 1 and parts[1].strip():
+                    cleaned = re.sub(r"^(?:with|saying|that|note|work\s*note|worknotes|to|is|as)?\s*[:\-\s]*", "", parts[1].strip(), flags=re.IGNORECASE)
+                    if len(cleaned) > 5:
+                        note_content = cleaned
+
+            if is_adding and note_content:
+                add_res = await servicenow_mcp_server.execute_tool("add_work_note", {
+                    "identifier": target_num,
+                    "work_notes": note_content
+                })
+                if add_res.get("success"):
+                    response_text = (
+                        f"### ✅ Work Note Added to **{target_num}**\n\n"
+                        f"The internal work note has been updated in live **ServiceNow (dev204434)**:\n\n"
+                        f"> 💬 *\"{note_content}\"*\n\n"
+                        f"- **Ticket:** `{target_num}`\n"
+                        f"- **State:** {add_res.get('state', 'Active')}\n"
+                        f"- **Total Journal Entries:** {len(add_res.get('updated_notes', []))}\n\n"
+                        f"🔗 **[Open {target_num} in ServiceNow](https://dev204434.service-now.com/incident_list.do?sysparm_query=number={target_num})**"
+                    )
+                    structured_data = {
+                        "work_note_added": True,
+                        "incident_number": target_num,
+                        "note": note_content,
+                        "work_notes": add_res.get("updated_notes", [])
+                    }
+                else:
+                    response_text = f"❌ Failed to add work note to {target_num}: {add_res.get('message', 'Unknown error')}"
+            else:
+                # Fetch work notes
+                notes_res = await servicenow_mcp_server.execute_tool("get_incident_work_notes", {"identifier": target_num})
+                notes = notes_res.get("work_notes", [])
+                if notes:
+                    note_lines = []
+                    for idx, n in enumerate(notes[:8], 1):
+                        author = n.get("created_by") or "System"
+                        ts = n.get("created_at") or ""
+                        val = n.get("value", "").replace("\n", " ")
+                        note_lines.append(f"**{idx}. {author}** *({ts})*\n> {val}\n")
+                    response_text = (
+                        f"### 📋 Work Notes & Activity History for **{target_num}**\n\n"
+                        f"Found **{len(notes)}** journal entr{'y' if len(notes)==1 else 'ies'} in ServiceNow:\n\n"
+                        + "\n".join(note_lines) +
+                        f"\n🔗 **[Open {target_num} in ServiceNow](https://dev204434.service-now.com/incident_list.do?sysparm_query=number={target_num})**"
+                    )
+                else:
+                    response_text = (
+                        f"### 📋 Work Notes for **{target_num}**\n\n"
+                        f"No prior work notes or journal entries recorded yet on `{target_num}`.\n\n"
+                        f"You can add one by replying: `Add work note to {target_num}: Your diagnostic findings...`"
+                    )
+                structured_data = {
+                    "incident_number": target_num,
+                    "count": len(notes),
+                    "work_notes": notes
+                }
+
+            suggestions = [
+                f"Add work note to {target_num}: Verified telemetry normal.",
+                f"Summarize {target_num}",
+                "Show all P1 critical incidents"
+            ]
 
     # 1. OUTAGE INVESTIGATION
     elif intent == IntentDetector.INTENT_OUTAGE_INVESTIGATION:
@@ -388,7 +526,7 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     # 4. SINGLE INCIDENT SUMMARIZATION / DEEP DIVE
     elif intent == IntentDetector.INTENT_INCIDENT_SUMMARIZATION:
         match = re.search(r"(inc\d{5,8})", raw_query, re.IGNORECASE)
-        target_num = match.group(1).upper() if match else None
+        target_num = match.group(1).upper() if match else context.get("last_incident_number")
         
         inc_detail = None
         if target_num:
@@ -675,15 +813,14 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         # Synthesize structured format
         insights = await InsightsEngine.synthesize_incident_query_response(raw_query, incidents, filters)
         response_text = insights["text"]
+        applied_filters = filters
+        retrieved_incidents = incidents
         structured_data = {
             **insights["structured"],
             "generated_query": sysparm_query,
             "applied_filters": filters,
             "explanation": query_info.get("explanation")
         }
-
-        # Update conversational memory with these results
-        session.add_interaction(raw_query, response_text, intent, filters, incidents)
 
         # Context-relevant suggestions
         if records_count == 0:
@@ -692,6 +829,27 @@ async def process_chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
             suggestions = ["Which applications generated the most incidents?", "Give RCA summary", "List all incidents assigned to Service Desk"]
         else:
             suggestions = ["Show all P1 critical incidents", "How many incidents are currently open?", "Identify recurring incidents and root causes"]
+
+    # UNIFIED SESSION MEMORY POST-PROCESSING:
+    # Record conversational turn across ALL intents (unless this turn was an explicit session reset)
+    if intent != IntentDetector.INTENT_RESET_SESSION:
+        target_inc = None
+        target_ci = None
+        if structured_data and isinstance(structured_data, dict):
+            target_inc = structured_data.get("ticket_number") or structured_data.get("incident_number")
+            if isinstance(structured_data.get("incident"), dict):
+                target_inc = target_inc or structured_data["incident"].get("number")
+                target_ci = target_ci or structured_data["incident"].get("cmdb_ci")
+
+        session.add_interaction(
+            user_text=raw_query,
+            assistant_text=response_text,
+            intent=intent,
+            filters=applied_filters,
+            results=retrieved_incidents,
+            incident_number=target_inc,
+            ci=target_ci
+        )
 
     exec_time = int((time.time() - start_time) * 1000)
 

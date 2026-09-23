@@ -30,13 +30,13 @@ async def test_application_analytics_with_filter():
     assert result_empty["top_applications"] == []
     assert result_empty["total_applications_impacted"] == 0
 
-    # Live query with august 2026 filter yields 0 incidents in dev204434
-    aug_q = build_timeframe_query("August 2026")
-    app_stats_aug = await analytics_mcp_server.execute_tool("get_application_analytics", {
+    # Live query with future timeframe filter yields 0 incidents in dev204434
+    future_q = build_timeframe_query("January 2030")
+    app_stats_future = await analytics_mcp_server.execute_tool("get_application_analytics", {
         "top_n": 5,
-        "filter_query": aug_q
+        "filter_query": future_q
     })
-    assert len(app_stats_aug["top_applications"]) == 0
+    assert len(app_stats_future["top_applications"]) == 0
 
     # Live query with yesterday filter returns whatever is in ServiceNow
     yesterday_q = build_timeframe_query("yesterday")
